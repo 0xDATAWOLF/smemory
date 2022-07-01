@@ -7,8 +7,8 @@
 
 #ifndef SOURCERY_SMEMORY_H
 #define SOURCERY_SMEMORY_H
-#include <emmintrin.h>
 #include <immintrin.h>
+#include <emmintrin.h>
 
 /**
  * ---------------------------------------------------------------------------------------------------------------------
@@ -78,14 +78,14 @@ typedef double			r64;
 // Defines the default number of pages allocated to the journal lookup table.
 #define __SMEM_INTERNAL_DEFAULT_JLUPTBL_PAGES 16
 
-// Defines the default alignment requires of allocations.
-#define __SMEM_INTERNAL_DEFAULT_ALIGNMENT 8
-
 // Sets the starting virtual address for the journal lookup table.
 #define __SMEM_INTERNAL_DEFAULT_LUPTABLE_VADDR TERABYTES(1)
 
 // Determines if the smemory should check for alignment in the custom memset.
 #define __SMEM_INTERNAL_CHECK_MEMSET_ALIGNMENT 1
+
+// Determines if the free operation should clear the memory to zero when invoked.
+#define __SMEM_CLEAR_ON_FREE 1
 
 /**
  * ---------------------------------------------------------------------------------------------------------------------
@@ -102,8 +102,61 @@ struct SMEMORY_CONFIG
 	_SMEM_IN_OPT u32 journal_min_pages;
 	/** If defined, a journal is created with n-pages at initialization time. */
 	_SMEM_IN_OPT u32 journal_create_journal;
-	/** Defines the allocation byte alignment for allocations. */
+	/**
+	 * Defines the allocation byte alignment for allocations. The default alignment
+	 * is optimized for sequential performance for sequential read/writes.
+	 */
 	_SMEM_IN_OPT u32 alloc_alignment;
+};
+
+/** Describes a journal of pages. */
+struct JOURNAL_DESCRIPTOR
+{
+	/** Describes the amount of memory in-use by the journal. */
+	u64 commit;
+	/** Describes of the offset location for the next allocation. */
+	u64 allocation_offset;
+	/** Number of pages contained within the journal. */
+	u32 npages;
+	/** Flags associated with the journal. */
+	u32 flags;
+	
+	/** Reserved to maintain alignment on a 32-byte boundary. */
+	u64 _reserved;
+
+};
+
+/** Describes an allocation that resides within a journal. */
+struct ALLOC_DESCRIPTOR
+{
+	/** The total size, in bytes, of the allocation. */
+	u64 commit;
+	/** The offset, in bytes, to the journal the allocation resides in. */ 
+	u64 journal_offset;
+	/** Padding to preserve 32-byte alignment. */
+	u64 _reserved[2];
+};
+
+/** Flags that describe a journal descriptor. */
+enum class JOURNAL_DESC_FLAGS: u32
+{
+	/**
+	 * Allows the journal to be used for general allocations. If this is not
+	 * set, the journal is considered private and will not be used for
+	 * general allocations.
+	 * */
+	SHARED = 0x0001,
+	/**
+	 * Disallows the journal to be reclaimed by the operating system. This
+	 * is overriden by FORCERECLAIM and will be reclaimed.
+	 * */
+	NORECLAIM = 0x0002,
+	/** 
+	 * Forces the journal to be reclaimed by the operating system regardless
+	 * if there are allocations still committed to the journal. Setting a
+	 * journal as NORECLAIM will not override this behavior.
+	 * */
+	FORCERECLAIM = 0x0004,
 };
 
 class smemory
@@ -127,14 +180,22 @@ class smemory
 		static void		free(_SMEM_IN void* addr);
 
 		/**
-		 * Allocates a nbytes of memory to the first available journal that is capable
-		 * of containing the allocation requirements. General allocations are always
-		 * slightly larger than the request, requiring room to maintain the allocation
-		 * size and journal offsets as well as additional padding bytes to keep it aligned
-		 * on the specified byte-boundary defined at initialization, with the default
-		 * set at 64-bit alignment/8 bytes.
+		 * Allocates a n-bytes of memory to the first available shared journal.
 		 */
-		static void*	alloc(_SMEM_IN size_t nbytes);
+		static void* 	alloc(_SMEM_IN size_t nbytes);
+
+		/**
+		 * Allocates n-bytes of memory to the provided journal. The allocation may
+		 * return a nullptr should the journal be unable to accomodate the allocation.
+		 */
+		static void* 	alloc(_SMEM_IN size_t nbytes, _SMEM_IN void* journal);
+
+		/**
+		 * Reclaims any journals (SHARED or PRIVATE) with zero-commits back to the
+		 * operating system. Any journals marked as NORECLAIM are ignored except if
+		 * they are marked as FORCERECLAIM.
+		 */
+		static void 	reclaim(_SMEM_VOID void);
 
 		/**
 		 * Returns the size of the operating system's page in bytes.
@@ -211,52 +272,6 @@ class smemory
 		inline static b32 		_intrinsic_AVX_256;
 		inline static size_t 	_page_size = 0;
 
-	public:
-
-		/** Describes a journal of pages. */
-		struct JOURNAL_DESCRIPTOR
-		{
-			/** Describes the amount of memory in-use by the journal. */
-			u32 commit;
-			/** Describes of the offset location for the next allocation. */
-			u32 allocation_offset;
-			/** Number of pages contained within the journal. */
-			u32 npages;
-			/** Flags associated with the journal. */
-			u32 flags;
-		};
-
-		/** Describes an allocation that resides within a journal. */
-		struct ALLOC_DESCRIPTOR
-		{
-			/** The total size, in bytes, of the allocation. */
-			u32 commit;
-			/** The offset, in bytes, to the journal the allocation resides in. */ 
-			u32 journal_offset;
-		};
-
-		/** Flags that describe a journal descriptor. */
-		enum class JOURNAL_DESC_FLAGS: u32
-		{
-			/**
-			 * Allows the journal to be used for general allocations. If this is not
-			 * set, the journal is considered private and will not be used for
-			 * general allocations.
-			 * */
-			SHARED = 0x0001,
-			/**
-			 * Disallows the journal to be reclaimed by the operating system. This
-			 * is overriden by FORCERECLAIM and will be reclaimed.
-			 * */
-			NORECLAIM = 0x0002,
-			/** 
-			 * Forces the journal to be reclaimed by the operating system regardless
-			 * if there are allocations still committed to the journal. Setting a
-			 * journal as NORECLAIM will not override this behavior.
-			 * */
-			FORCERECLAIM = 0x0004,
-		};
-
 };
 
 /**
@@ -269,19 +284,25 @@ class smemory
 
 smemory::smemory()
 {
+	// Determine intrinsic support.
+	_get_intrinsic_support();
+
+	// Determine default alignment requirements.
+	u32 _default_alignment = 8;
+	if (smemory::_intrinsic_SSE2_128) _default_alignment = 16;
+	if (smemory::_intrinsic_AVX_256) _default_alignment = 32;
+
 	// Automatically set the defaults on construction in case init is not called.
 	this->_journal_minimum_pages = 1;
 	this->_journal_luptable_pages = __SMEM_INTERNAL_DEFAULT_JLUPTBL_PAGES;
 	this->_journal_luptable_count = 0;
-	this->_alloc_alignment = 		__SMEM_INTERNAL_DEFAULT_ALIGNMENT;
-
-	// Determine intrinsic support.
-	_get_intrinsic_support();
+	this->_alloc_alignment = 		_default_alignment;
 
 	// Determine the size of pages we receive from the operating system.
 	SYSTEM_INFO _sys_info = {};
 	GetSystemInfo(&_sys_info);
 	this->_page_size = (size_t)_sys_info.dwPageSize;
+
 }
 
 smemory::~smemory()
@@ -320,8 +341,8 @@ void smemory::_get_intrinsic_support()
 	if (ids >= 0x00000001)
 	{
 		__cpuidex(_cpuinfo, 0x00000001, 0);
-		smemory::_intrinsic_SSE2_128 = (_cpuinfo[3] & ((int)1 << 26)) != 0;
-		smemory::_intrinsic_AVX_256 = (_cpuinfo[2] & ((int)1 << 28)) != 0;
+		smemory::_intrinsic_SSE2_128 = 	(_cpuinfo[3] & ((int)1 << 26)) != 0;
+		smemory::_intrinsic_AVX_256 = 	(_cpuinfo[2] & ((int)1 << 28)) != 0;
 	}
 #endif
 
@@ -417,12 +438,16 @@ void smemory::memory_set(void* set_addr, size_t size, u8 val)
 {
 
 	/**
-	 * 
+	 * Note, this is not the most optimized memory set that can be achieved. To
+	 * reduce time in memory, and for particularly large regions of memory, it may
+	 * be wise to reduce branching and determine a particular memory set routine
+	 * at initialization time. This may be the optimal approach as the library matures.
 	 */
 
 	/**
 	 * If we do not have intrinsic support or the allocation we are setting is small,
-	 * we can use a 64-bit, unaligned procedure.
+	 * we can use a 64-bit, unaligned procedure as it will suffice to perform the
+	 * required operation.
 	 */
 	if (!smemory::_intrinsic_SSE2_128 || !smemory::_intrinsic_AVX_256 || size < 32)
 	{
@@ -431,14 +456,13 @@ void smemory::memory_set(void* set_addr, size_t size, u8 val)
 	}
 
 	/**
-	 * For SSE/AVX level memory_set, we can use _mm_set1_epi8 to broadcast the
-	 * specified value, and _mm_store_si128i / _mm_storeu_128i to set. Additionally,
-	 * alignment concerns need to be considered. We will have alignment set and
-	 * configured at initialization time.
+	 * For SSE/AVX level memory_set, which can blast bits out to memory much faster
+	 * than its unaligned counterpart, we can utilize AVX for 256-bit per-instruction
+	 * and SSE2 for 126-bit per-instruction.
 	 */
 
 	// 256-bit level setting.
-	if (smemory::_intrinsic_AVX_256 && 1 == 0)
+	if (smemory::_intrinsic_AVX_256)
 	{
 		// Ensure boundary alignment. If we do hit unalignment, it is because smemory
 		// was improperly configured or the user is using the memory_set on a region
@@ -459,7 +483,7 @@ void smemory::memory_set(void* set_addr, size_t size, u8 val)
 		set_addr = (u8*)set_addr + (size - (size % 32));
 		size = (size % 32);
 		memory_set_unaligned(set_addr, size, val);
-
+		
 	}
 
 	// 128-bit level setting for when AVX is not available.
@@ -533,16 +557,11 @@ void smemory::init(SMEMORY_CONFIG* config)
 void* smemory::alloc(size_t nbytes)
 {
 
-	// Enforce a 4GB allocation max.
-	if (nbytes > (0xFFFFFFFF)) return nullptr;
-
-	// The total allocation is the size of the requested allocation plus the
-	// room required to store the ALLOC_DESCRIPTOR. The allocation will also
-	// be automatically aligned to the byte-boundary specified during initialization.
-	// By default, it will be 64-bit aligned (8-bytes).
 	__SMEM_INTERNAL_GET_INSTANCE();
-	size_t _alloc_size = (nbytes + sizeof(ALLOC_DESCRIPTOR));
-	_alloc_size += (_alloc_size % _smem._alloc_alignment);
+	size_t _alloc_desc_size = sizeof(ALLOC_DESCRIPTOR);
+	size_t _alloc_req = nbytes + _alloc_desc_size;
+	size_t _alloc_alignment_pad = _smem._alloc_alignment - (_alloc_req % _smem._alloc_alignment);
+	size_t _alloc_size = _alloc_req + _alloc_alignment_pad;
 
 	// Retrieve a journal to fit the requested allocation.
 	JOURNAL_DESCRIPTOR* _jdescriptor = (JOURNAL_DESCRIPTOR*)_smem._get_avail_journal(nbytes);
@@ -556,8 +575,8 @@ void* smemory::alloc(size_t nbytes)
 
 	// Set the ALLOC_DESCRIPTOR details.
 	ALLOC_DESCRIPTOR* _adescriptor = (ALLOC_DESCRIPTOR*)_alloc;
-	_adescriptor->commit = (u32)_alloc_size;
-	_adescriptor->journal_offset = (u32)((u64)_alloc - (u64)_jdescriptor);
+	_adescriptor->commit = (u64)_alloc_size;
+	_adescriptor->journal_offset = ((u64)_alloc - (u64)_jdescriptor);
 
 	// Get the base location of the allocated region the user assigns to.
 	void* _alloc_ptr = (void*)((u8*)_alloc + sizeof(ALLOC_DESCRIPTOR));
@@ -577,7 +596,7 @@ void smemory::free(void* addr)
 	JOURNAL_DESCRIPTOR* _jdescriptor = (JOURNAL_DESCRIPTOR*)((u8*)_pptr - _adescriptor->journal_offset);
 	_jdescriptor->commit -= _adescriptor->commit;
 
-#if defined(DEBUG)
+#if __SMEM_CLEAR_ON_FREE == 1
 	// Clear out the bits.
 	memory_set(_pptr, _adescriptor->commit, 0x00);
 #endif
@@ -585,6 +604,14 @@ void smemory::free(void* addr)
 	// Set the commit to zero to prevent multiple decommits to the journal.
 	_adescriptor->commit = 0;
 	return; 
+
+}
+
+void smemory::reclaim()
+{
+
+	__SMEM_INTERNAL_GET_INSTANCE();
+	
 
 }
 

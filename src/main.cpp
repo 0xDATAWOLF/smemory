@@ -13,7 +13,7 @@ int main(int argc, char** argv)
 	smemory_config.journal_create_journal = 1;
 	smemory::init(&smemory_config);
 
-	int numints = 32;
+	int numints = 34;
 
 	// Allocate an array of integers.
 	int* intarr = (int*)smemory::alloc(sizeof(int)*numints);
