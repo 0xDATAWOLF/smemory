@@ -51,7 +51,7 @@ Here are a list of potential features I will add to smemory.
 	</tr>
 	<tr>
 		<td>Front-end Journals</td>
-		<td>:white_check_mark:</td>
+		<td>N/A</td>
 		<td>
 			Journals will be made referencable by allocations pointers. Journals
 			can be dynamically created and modifiable by the user. Users can apply
@@ -60,14 +60,14 @@ Here are a list of potential features I will add to smemory.
 	</tr>
 	<tr>
 		<td>Push/Pop Allocations</td>
-		<td>:white_check_mark:</td>
+		<td>N/A</td>
 		<td>
 			An extended journal structure with push/pop functionality.
 		</td>
 	</tr>
 	<tr>
 		<td>"Slow" Alias Pointers</td>
-		<td>:white_check_mark:</td>
+		<td>N/A</td>
 		<td>
 			A type of pointer structure that indirects the location of memory it
 			points to. This type of pointer is considered slow because it needs to
@@ -76,7 +76,7 @@ Here are a list of potential features I will add to smemory.
 	</tr>
 	<tr>
 		<td>Shared Pointers</td>
-		<td>:white_check_mark:</td>
+		<td>N/A</td>
 		<td>
 			A shared pointer type that uses reference counting to determine when
 			the allocation should be deallocated.
