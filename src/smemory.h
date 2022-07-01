@@ -32,7 +32,7 @@
  * 
  * 		For general allocations:
  * 		1. Allocate n-bytes with smemory::alloc(n).
- * 		2. Free that allocation pointer with smemory::alloc().
+ * 		2. Free that allocation pointer with smemory::free().
  * 
  * 		Note:
  * 		Smemory does not automatically release pages back to the operating system. Therefore, it is up to the user to
