@@ -1,7 +1,8 @@
 /**
  * ---------------------------------------------------------------------------------------------------------------------
  * smemory - Developed by Christopher N. DeJong, @Github 0xDATAWOLF, June 2022
- * 			 Review the license before using in your projects.
+ * Please review the license before using in your projects. You can get in contact if
+ * you'd like to use it for commercial projects.
  * ---------------------------------------------------------------------------------------------------------------------
  */
 
@@ -611,7 +612,7 @@ void smemory::reclaim()
 {
 
 	__SMEM_INTERNAL_GET_INSTANCE();
-	
+
 
 }
 
