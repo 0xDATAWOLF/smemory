@@ -18,7 +18,80 @@
  * Essential Documentation
  * ---------------------------------------------------------------------------------------------------------------------
  * 
- * Documentation will be coming soon.
+ * Getting Started
+ * 		You can include this file into your project and begin using it right away. There are no dependecies outside of
+ * 		OS-level support. Smemory is designed for Windows but may include Linux support in the future. It is assumed that
+ * 		you are using smemory on Windows.
+ * 
+ * 		Additionally, smemory requires that you are using "modern" hardware--your CPU must at least have SSE2 or AVX
+ * 		supported in order to make it performant on your system.
+ * 
+ * 		You must initialize smemory with smemory::init() / smemory::init(_SMEM_IN_OUT SMEMORY_CONFIG*) at the start of
+ * 		your application. Otherwise the journal lookup table will not be created and your app will be taken to funky town
+ * 		if you attempt to allocate something.
+ * 
+ * 		For general allocations:
+ * 		1. Allocate n-bytes with smemory::alloc(n).
+ * 		2. Free that allocation pointer with smemory::alloc().
+ * 
+ * 		Note:
+ * 		Smemory does not automatically release pages back to the operating system. Therefore, it is up to the user to
+ * 		periodically (once per runtime loop is recommended) to invoke smemory::reclaim(). This will reclaim any journals
+ * 		that have a zero-commit or flagged with FORCERECLAIM. Any journals that with a zero-commit that have the flag
+ * 		NORECLAIM will not be reclaimed until the flag is toggled off or flagged with FORCERECLAIM.
+ * 
+ * Journals
+ * 		Journals are a set of contiguous pages given back to use from the operating system when calling the virtual
+ * 		allocation function. The term "book" doesn't make for good tech-orientated nomenclature, so that is what I went
+ * 		with. As allocations are made, they are put into the first available journal with the capacity to contain it.
+ * 		If no such journal is available, one is created with the minimum amount of space required to contain it.
+ * 
+ * 		Journals persist so long as they have an non-zero-commit. That means that an otherwise empty journal with a single
+ * 		lingering allocation will not be reclaimed by the operating system.
+ * 
+ * General Allocations
+ * 		Smemory is not designed to be a general allocator due to the way journals are laid out. Smemory does not track
+ * 		individual allocations beyond what is necessary to maintain the journal's state. Therefore, it is up to the user
+ * 		to ensure that allocations are free'd in a timely and efficient manner should smemory be used as a general
+ * 		allocator.
+ * 
+ * -----------------------------------------------------------------------------
+ * Front-end API
+ * -----------------------------------------------------------------------------
+ * 
+ * smemory::init(_SMEM_VOID)
+ * 		Initializes smemory and creates the journal lookup table.
+ * 
+ * smemory::init(_SMEM_IN_OUT SMEMORY_CONFIG*)
+ * 		Initializes smemory with the provided configuration structure and creates
+ * 		the journal lookup table. Modifies the provided configuration with defaults
+ * 		if they are not provided.
+ * 
+ * smemory::page_size(_SMEM_VOID)
+ * 		Returns the minimum page size used by smemory.
+ * 
+ * smemory::alloc(_SMEM_IN size_t)
+ * 		Allocates n-bytes to the first available journal.
+ * 
+ * smemory::free(_SMEM_IN void*)
+ * 		Frees an allocation and decommits from the associated journal.
+ * 
+ * smemory::reclaim(_SMEM_VOID)
+ * 		Reclaims and decommits a journal back to the operating system. All the
+ * 		allocations made in the journal are automatically free'd, but may cause
+ * 		lingering pointers to become invalid and may produced undefined behavior.
+ * 
+ * smemory::memory_set_unaligned(_SMEM_IN void*, _SMEM_IN size_t, _SMEM_IN_OPT uint8_t)
+ * 		A memory set routine that will set a region of memory to a given value.
+ * 		This routine is much slower than the C Standard Library's implementation
+ * 		and is only used to set a region of memory that is unaligned.
+ * 
+ * smemory::memory_set(_SMEM_IN void*, _SMEM_IN size_t, _SMEM_IN_OPT uint8_t)
+ * 		A memory set routine that uses SSE2 / AVX to perform a memory set on
+ * 		an aligned boundary. This will automatically check for alignment and will
+ * 		correct the alignment. All allocations made using smemory are already made
+ * 		to be aligned along the boundary of best fit. For user-defined regions,
+ * 		this may not be the case.
  * 
  */
 
@@ -460,6 +533,9 @@ inline void smemory::memory_set_unaligned(void* set_addr, size_t size, u8 val)
 
 size_t smemory::page_size()
 {
+	// Even though we aren't using, we are required to fetch it to ensure that
+	// the constructor is invoked at least once before returning a valid page size.
+	__SMEM_INTERNAL_GET_INSTANCE();
 	return smemory::_page_size;
 }
 
